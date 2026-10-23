@@ -35,7 +35,7 @@ Ai-Assistant brings AI-powered chat, workspace file management, shell command ex
 Open Termux and run:
 
 ```bash
-pkg update
+pkg update && pkg upgrade -y
 pkg install python git -y
 ```
 
