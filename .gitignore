@@ -1,0 +1,25 @@
+# Secrets and API keys
+.config/
+.env
+.env.*
+!.env.example
+key
+*.key
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
