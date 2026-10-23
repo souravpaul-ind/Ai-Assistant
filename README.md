@@ -60,7 +60,6 @@ You only need a valid key for at least one provider. Configure more providers to
 |---|---|---|
 | OpenRouter | https://openrouter.ai/keys | `~/.config/openrouter/key` |
 | Google Gemini | https://aistudio.google.com/apikey | `~/.config/gemini/key` |
-| DeepSeek | https://platform.deepseek.com/api_keys | `~/.config/deepseek/key` |
 
 ### OpenRouter
 
