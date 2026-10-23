@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Assistant - Login</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --accent: #38bdf8;
+            --accent-hover: #0ea5e9;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --error: #f43f5e;
+            --success: #10b981;
+            --border: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2.5rem 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+        }
+
+        input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background-color: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background-color: var(--accent);
+            color: #0f172a;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+            margin-top: 0.5rem;
+        }
+
+        .btn:hover {
+            background-color: var(--accent-hover);
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .message {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            text-align: center;
+            display: none;
+        }
+
+        .message.error {
+            background-color: rgba(244, 63, 94, 0.1);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+            color: var(--error);
+            display: block;
+        }
+
+        .message.success {
+            background-color: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: var(--success);
+            display: block;
+        }
+
+        /* Dashboard view */
+        #dashboard-view {
+            display: none;
+            text-align: center;
+        }
+
+        #dashboard-view h2 {
+            margin-bottom: 1rem;
+        }
+
+        #dashboard-view p {
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+        }
+
+        .btn-danger {
+            background-color: #f43f5e;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #e11d48;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Login Card -->
+        <div class="card" id="login-card">
+            <div class="header">
+                <h1>AI Assistant</h1>
+                <p>Sign in to your account</p>
+            </div>
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" required autocomplete="username" placeholder="Enter username">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required autocomplete="current-password" placeholder="Enter password">
+                </div>
+                <button type="submit" class="btn">Sign In</button>
+                <div id="auth-message" class="message"></div>
+            </form>
+        </div>
+
+        <!-- Dashboard Card (Hidden until login) -->
+        <div class="card" id="dashboard-view">
+            <div class="header">
+                <h1>Welcome Back!</h1>
+                <p id="user-display">You are successfully logged in.</p>
+            </div>
+            <p>Access your AI Assistant web workspace securely.</p>
+            <button id="logout-btn" class="btn btn-danger">Sign Out</button>
+        </div>
+    </div>
+
+    <script>
+        const loginCard = document.getElementById('login-card');
+        const dashboardView = document.getElementById('dashboard-view');
+        const loginForm = document.getElementById('login-form');
+        const authMessage = document.getElementById('auth-message');
+        const logoutBtn = document.getElementById('logout-btn');
+        const userDisplay = document.getElementById('user-display');
+
+        // Check active session on load
+        function checkSession() {
+            const currentUser = sessionStorage.getItem('ai_assistant_user');
+            if (currentUser) {
+                showDashboard(currentUser);
+            }
+        }
+
+        function showMessage(text, type) {
+            authMessage.textContent = text;
+            authMessage.className = `message ${type}`;
+        }
+
+        function showDashboard(username) {
+            loginCard.style.display = 'none';
+            dashboardView.style.display = 'block';
+            userDisplay.textContent = `Logged in as: ${username}`;
+        }
+
+        function showLogin() {
+            dashboardView.style.display = 'none';
+            loginCard.style.display = 'block';
+            loginForm.reset();
+            authMessage.className = 'message';
+        }
+
+        // Simple client-side hashing (SHA-256) for demo/prototype auth validation
+        async function hashPassword(password) {
+            const msgBuffer = new TextEncoder().encode(password);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Predefined default demo credentials hash (admin / admin123)
+        // SHA-256 for 'admin123' = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9
+        const DEFAULT_USER = 'admin';
+        const DEFAULT_HASH = '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9';
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                showMessage('Please fill in all fields.', 'error');
+                return;
+            }
+
+            const enteredHash = await hashPassword(password);
+
+            if (username === DEFAULT_USER && enteredHash === DEFAULT_HASH) {
+                sessionStorage.setItem('ai_assistant_user', username);
+                showMessage('Login successful!', 'success');
+                setTimeout(() => {
+                    showDashboard(username);
+                }, 500);
+            } else {
+                showMessage('Invalid username or password.', 'error');
+            }
+        });
+
+        logoutBtn.addEventListener('click', () => {
+            sessionStorage.removeItem('ai_assistant_user');
+            showDashboard();
+            showLogin();
+        });
+
+        // Initialize
+        checkSession();
+    </script>
+</body>
+</html>

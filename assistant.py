@@ -275,6 +275,17 @@ DISPATCH = {
 def call_api(messages):
     errors = []
 
+    def strip_nulls(value):
+        if isinstance(value, dict):
+            return {
+                k: strip_nulls(v)
+                for k, v in value.items()
+                if v is not None
+            }
+        if isinstance(value, list):
+            return [strip_nulls(v) for v in value if v is not None]
+        return value
+
     def request_json(url, payload, key, provider, extra_headers=None):
         headers = {
             "Authorization": "Bearer " + key,
@@ -285,7 +296,7 @@ def call_api(messages):
 
         request = urllib.request.Request(
             url,
-            data=json.dumps(payload).encode("utf-8"),
+            data=json.dumps(strip_nulls(payload)).encode("utf-8"),
             headers=headers,
             method="POST",
         )
@@ -293,10 +304,29 @@ def call_api(messages):
             with urllib.request.urlopen(request, timeout=120) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            details = exc.read().decode(errors="replace")[:1500]
-            raise RuntimeError(f"{provider} HTTP {exc.code}: {details}") from None
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"{provider} connection error: {exc.reason}") from None
+            # Keep provider errors short; never print raw response bodies or headers.
+            try:
+                body = exc.read().decode("utf-8", errors="replace").lower()
+            except Exception:
+                body = ""
+
+            if exc.code == 429:
+                if provider == "OpenRouter":
+                    msg = "free quota/rate limit exhausted"
+                else:
+                    msg = "quota or rate limit exceeded"
+            elif "thought_signature" in body or "thought signature" in body:
+                msg = "tool-call signature missing in conversation history"
+            elif exc.code in (401, 403):
+                msg = "API key rejected or access not permitted"
+            elif exc.code == 400:
+                msg = "request rejected (check model, tool-call history, or payload)"
+            else:
+                msg = "provider request failed"
+
+            raise RuntimeError(f"{provider}: HTTP {exc.code} — {msg}") from None
+        except urllib.error.URLError:
+            raise RuntimeError(f"{provider}: connection failed; check internet") from None
 
     # Try OpenRouter first.
     try:
@@ -345,7 +375,8 @@ def call_api(messages):
     except Exception as exc:
         errors.append(str(exc))
 
-    raise RuntimeError("All AI providers failed:\\n" + "\\n".join(errors))
+    summary = "\\n".join(f"- {e}" for e in errors)
+    raise RuntimeError("All AI providers failed:\\n" + summary)
 
 def ask_agent(history):
     for _ in range(8):
