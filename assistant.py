@@ -24,6 +24,7 @@ except ImportError:
 
 HOME = Path.home().resolve()
 KEY_FILE = HOME / ".config" / "openrouter" / "key"
+GEMINI_KEY_FILE = HOME / ".config" / "gemini" / "key"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 AI_WORKDIR = Path(os.environ.get("AI_WORKDIR", os.getcwd())).expanduser().resolve()
@@ -109,9 +110,9 @@ def safe_path(raw="."):
 
 def is_secret_path(path):
     try:
-        return path.resolve() == KEY_FILE.resolve()
+        return path.resolve() in (KEY_FILE.resolve(), GEMINI_KEY_FILE.resolve())
     except OSError:
-        return path == KEY_FILE
+        return path == KEY_FILE or path == GEMINI_KEY_FILE
 
 
 def tool_list_files(args):
@@ -196,7 +197,7 @@ def tool_run_command(args):
     if any(Path(word).name.lower() in {"sudo", "su", "doas", "tsu"} for word in words):
         return "Blocked: root/privilege-escalation commands are not allowed."
     lowered = command.lower().replace("\\", "/")
-    secret_patterns = (".config/openrouter/key", ".config/gemini-assistant/key")
+    secret_patterns = (".config/openrouter/key", ".config/gemini/key", ".config/gemini-assistant/key")
     if any(pattern in lowered for pattern in secret_patterns):
         return "Blocked: commands may not directly reference known API-key files."
     if not approved(f"Run shell command in {AI_WORKDIR}:\n{command}"):
@@ -272,37 +273,79 @@ DISPATCH = {
 
 
 def call_api(messages):
-    if not KEY_FILE.is_file():
-        raise RuntimeError(f"OpenRouter key not found at {KEY_FILE}. Add your key to that file first.")
-    key = KEY_FILE.read_text(encoding="utf-8").strip()
-    if not key:
-        raise RuntimeError("OpenRouter API key file is empty.")
-    payload = json.dumps({
-        "model": MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "temperature": 0.3,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        API_URL, data=payload,
-        headers={
+    errors = []
+
+    def request_json(url, payload, key, provider, extra_headers=None):
+        headers = {
             "Authorization": "Bearer " + key,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://openrouter.ai/",
-            "X-Title": "Termux AI Assistant",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode(errors="replace")[:2500]
-        raise RuntimeError(f"OpenRouter HTTP {exc.code}: {details}") from None
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not connect to OpenRouter: {exc.reason}") from None
+        }
+        if extra_headers:
+            headers.update(extra_headers)
 
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            details = exc.read().decode(errors="replace")[:1500]
+            raise RuntimeError(f"{provider} HTTP {exc.code}: {details}") from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"{provider} connection error: {exc.reason}") from None
+
+    # Try OpenRouter first.
+    try:
+        if not KEY_FILE.is_file():
+            raise RuntimeError(f"Key file not found: {KEY_FILE}")
+        key = KEY_FILE.read_text(encoding="utf-8").strip()
+        if not key:
+            raise RuntimeError("OpenRouter key file is empty.")
+
+        payload = {
+            "model": MODEL,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0.3,
+        }
+        return request_json(
+            API_URL, payload, key, "OpenRouter",
+            {
+                "HTTP-Referer": "https://openrouter.ai/",
+                "X-Title": "Termux AI Assistant",
+            },
+        )
+    except Exception as exc:
+        errors.append(str(exc))
+
+    # If OpenRouter fails, try Gemini Flash.
+    try:
+        if not GEMINI_KEY_FILE.is_file():
+            raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
+        key = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip()
+        if not key:
+            raise RuntimeError("Gemini key file is empty.")
+
+        payload = {
+            "model": "gemini-3.5-flash-lite",
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0.3,
+        }
+        return request_json(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            payload, key, "Gemini",
+        )
+    except Exception as exc:
+        errors.append(str(exc))
+
+    raise RuntimeError("All AI providers failed:\\n" + "\\n".join(errors))
 
 def ask_agent(history):
     for _ in range(8):

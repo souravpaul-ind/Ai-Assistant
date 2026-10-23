@@ -58,28 +58,50 @@ else
 fi
 chmod 600 "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" 2>/dev/null || true
 
-info "Checking OpenRouter API key..."
-if [[ -e "$KEY_FILE" ]]; then
-    chmod 600 "$KEY_FILE"
-    success "Existing API key file found and preserved without prompting."
-else
-    printf '\n%sOpenRouter API key setup%s\n' "$PURPLE" "$R"
-    printf 'Get a key from: %shttps://openrouter.ai/keys%s\n' "$CYAN" "$R"
-    read -r -s -p 'Enter API key (hidden; Enter to skip): ' API_KEY || API_KEY=''
-    printf '\n'
-    if [[ -n "$API_KEY" ]]; then
-        if [[ "$API_KEY" != sk-or-* ]]; then
-            warning "The key does not begin with sk-or-. Saving only because you entered it explicitly."
-        fi
-        mkdir -p "$(dirname "$KEY_FILE")"
-        (umask 077; printf '%s' "$API_KEY" > "$KEY_FILE")
-        chmod 600 "$KEY_FILE"
-        unset API_KEY
-        success "API key saved locally with private permissions."
-    else
-        warning "Skipped key setup. Add your key later at $KEY_FILE"
+info "Checking AI provider API keys..."
+
+configure_key() {
+    local provider="$1"
+    local key_file="$2"
+    local key_url="$3"
+    local answer=""
+    local api_key=""
+
+    if [[ -s "$key_file" ]]; then
+        chmod 600 "$key_file"
+        success "$provider key already exists; preserving it."
+        return
     fi
-fi
+
+    printf '\n%s%s API key setup%s\n' "$PURPLE" "$provider" "$R"
+    printf 'Get your key from: %s%s%s\n' "$CYAN" "$key_url" "$R"
+    read -r -p "Configure $provider now? [y/N]: " answer || answer=""
+    case "$answer" in
+        y|Y|yes|YES|Yes) ;;
+        *)
+            warning "Skipped $provider setup."
+            return
+            ;;
+    esac
+
+    read -r -s -p "Enter $provider API key (hidden; Enter to skip): " api_key || api_key=""
+    printf '\n'
+
+    if [[ -z "$api_key" ]]; then
+        warning "$provider key setup skipped."
+        unset api_key
+        return
+    fi
+
+    mkdir -p "$(dirname "$key_file")"
+    (umask 077; printf '%s' "$api_key" > "$key_file")
+    chmod 600 "$key_file"
+    unset api_key
+    success "$provider key saved securely."
+}
+
+configure_key "OpenRouter" "$HOME/.config/openrouter/key" "https://openrouter.ai/keys"
+configure_key "Gemini" "$HOME/.config/gemini/key" "https://aistudio.google.com/apikey"
 
 info "Creating launcher..."
 cat > "$LAUNCHER" <<'LAUNCHER_EOF'
@@ -101,6 +123,8 @@ chmod 700 "$LAUNCHER"
 python -m py_compile "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" || error "Python syntax check failed."
 
 success "Installation complete."
-printf '\nProject directory: %s\nLauncher:          %s\nAPI key file:      %s\n\n' "$INSTALL_DIR" "$LAUNCHER" "$KEY_FILE"
+printf '\nProject directory: %s\nLauncher:          %s\n\n' "$INSTALL_DIR" "$LAUNCHER"
+printf 'OpenRouter key: %s\nGemini key:     %s (optional)\n\n' \
+    "$HOME/.config/openrouter/key" "$HOME/.config/gemini/key"
 printf 'Start from any folder with: %sai%s\n' "$CYAN" "$R"
 printf 'The assistant will use the folder you launched it from as its workspace.\n'

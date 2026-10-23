@@ -1,250 +1,191 @@
 # 🤖 Ai-Assistant
 
-**A personal AI assistant for Termux on Android, powered by OpenRouter.**
+A personal AI assistant for Termux on Android, with OpenRouter and optional Google Gemini support. It also offers workspace file tools, shell command execution with confirmation, and optional voice interaction.
 
-Ai-Assistant brings AI-powered chat, workspace file management, shell command execution, and optional voice interaction to your Termux terminal.
+## Features
 
-## ✨ Features
+- OpenRouter as the primary AI provider
+- Optional Google Gemini fallback
+- Provider fallback when an earlier provider fails
+- Workspace file listing, reading, writing, editing, and deletion
+- Shell command execution with confirmation
+- Local Python HTTP server and process tools
+- Optional voice input and spoken responses
+- Local, private API-key storage
 
-* 🤖 AI chat powered by OpenRouter
-* 📁 Create, read, edit, list, and delete workspace files
-* 💻 Execute shell commands with user confirmation
-* 📂 Work in the directory from which the assistant is launched
-* 🛡️ Workspace path restrictions for file operations
-* 🎨 Hacker-style terminal welcome screen
-* 🕒 Display the date, time, and active workspace
-* 🎙️ Voice input using `/listen`
-* 🔊 Spoken AI replies using `/speak on` and `/speak off`
-* 🧰 Start a local Python HTTP server
-* ⚙️ Process management with confirmation
-* 🔐 Store the OpenRouter API key locally
+## Requirements
 
-## 📋 Requirements
+- Android with [Termux](https://github.com/termux/termux-app)
+- Python 3 and Git
+- An API key for at least one supported provider
+- Termux:API app and package for optional voice features
 
-* Android device
-* [Termux](https://github.com/termux/termux-app)
-* Python 3
-* Git
-* An [OpenRouter API key](https://openrouter.ai/keys)
-* Termux:API app and package for optional voice features
+## Quick Installation
 
-## ⚡ Quick Installation
-
-### Step 1: Install the required packages
-
-Open Termux and run:
+Update Termux and install dependencies:
 
 ```bash
 pkg update && pkg upgrade -y
 pkg install python git -y
 ```
 
-### Step 2: Clone the repository
+Clone the project and run the installer:
 
 ```bash
 git clone https://github.com/souravpaul-ind/Ai-Assistant.git
 cd Ai-Assistant
-```
-
-### Step 3: Run the setup script
-
-```bash
 bash setup.sh
 ```
 
-Follow the installer's on-screen instructions. If the installer asks for an OpenRouter API key, enter it when prompted.
+The installer configures OpenRouter first. Gemini setup is optional: choose Yes to configure it or press Enter to skip. Existing non-empty key files are preserved and are not prompted for again.
 
-Get your API key from:
-
-**https://openrouter.ai/keys**
-
-The intended local key file is:
-
-```text
-~/.config/openrouter/key
-```
-
-The key should remain private and must never be committed to GitHub. If you already have a configured key, the installer should preserve it rather than unnecessarily asking for it again.
-
-### Step 4: Start the assistant
-
-After installation, run:
+Start Akbar AI:
 
 ```bash
 ai
 ```
 
-To use the assistant with a particular project, first navigate to that directory:
+To use a particular project as the workspace, launch the assistant from that folder:
 
 ```bash
 cd ~/my-project
 ai
 ```
 
-Replace `~/my-project` with the directory you want the assistant to work in.
+## AI Providers and API Keys
 
-If the `ai` command is unavailable, check whether the installation completed successfully and whether `$PREFIX/bin` is in your Termux `PATH`.
+You only need a valid key for at least one provider. Configure more providers to enable fallback.
 
-## 🔑 OpenRouter API Key
+| Provider | Get an API key | Local key file |
+|---|---|---|
+| OpenRouter | https://openrouter.ai/keys | `~/.config/openrouter/key` |
+| Google Gemini | https://aistudio.google.com/apikey | `~/.config/gemini/key` |
+| DeepSeek | https://platform.deepseek.com/api_keys | `~/.config/deepseek/key` |
 
-Ai-Assistant uses OpenRouter to communicate with AI models.
+### OpenRouter
 
-1. Visit https://openrouter.ai/keys.
-2. Create an API key.
-3. Enter the key when requested by the installer, if supported by your version of `setup.sh`.
-4. Keep the key in the local configuration file.
+OpenRouter provides access to models available through its service. API access, model availability, and usage limits depend on the selected model and your account.
 
-Configuration path:
+Key file:
 
 ```text
 ~/.config/openrouter/key
 ```
 
-To secure the file permissions:
+### Google Gemini
 
-```bash
-chmod 600 ~/.config/openrouter/key
+Gemini is Google's AI API. Create a key in Google AI Studio and save it in the following file:
+
+```text
+~/.config/gemini/key
 ```
 
-**Security reminders:**
+API access, model availability, and billing or usage limits are controlled by each provider. A key does not guarantee free usage.
 
-* Never publish your API key.
-* Never add the key to source code or README files.
-* Never commit the key to a public repository.
-* Review commands before approving them.
+### Add or change a key later
 
-## 🎙️ Optional Voice Setup
+Create the relevant directory and open the desired key file locally. For example, to configure Gemini:
 
-Voice features require the Termux:API Android app and its Termux package.
+```bash
+mkdir -p ~/.config/gemini
+nano ~/.config/gemini/key
+chmod 700 ~/.config/gemini
+chmod 600 ~/.config/gemini/key
+```
 
-Install the package:
+Use `~/.config/openrouter/key` for OpenRouter. Never paste an API key into a public issue, chat, screenshot, README, or source code.
+
+### Provider fallback
+
+Akbar AI tries OpenRouter first and then Gemini if Gemini is configured. If a provider request fails, the assistant can try the next provider. All providers can still fail due to network problems, invalid keys, rate limits, model availability, or account restrictions.
+
+## Start the Assistant
+
+```bash
+ai
+```
+
+Common chat commands:
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/listen` | Capture voice input |
+| `/speak on` | Enable spoken replies |
+| `/speak off` | Disable spoken replies |
+| `/clear` | Clear conversation history |
+| `/exit` | Exit the assistant |
+
+## Optional Voice Setup
+
+Install the Termux API package:
 
 ```bash
 pkg install termux-api -y
 ```
 
-Install the compatible Termux:API app, grant the required Android permissions, and ensure that Android speech recognition and text-to-speech services are available.
+Install the compatible Termux:API Android app, grant required permissions, and ensure Android speech recognition and text-to-speech services are available.
 
-### Voice Commands
+## Tools and Safety
 
-| Command      | Description                                  |
-| ------------ | -------------------------------------------- |
-| `/listen`    | Recognize speech and send the text to the AI |
-| `/speak on`  | Enable spoken AI replies                     |
-| `/speak off` | Disable spoken AI replies                    |
+Depending on the installed version, the assistant can list, read, create, edit, and delete workspace files, run shell commands, start a local HTTP server, and stop processes.
 
-When voice replies are enabled, the assistant attempts to speak AI responses using Termux text-to-speech. Use `/speak off` to return to text-only replies.
+Review every requested operation before approving it. Workspace restrictions do not make every shell command safe.
 
-## 💬 Available Commands
+## Troubleshooting
 
-| Command      | Description                            |
-| ------------ | -------------------------------------- |
-| `/help`      | Display available commands             |
-| `/listen`    | Capture voice input                    |
-| `/speak on`  | Enable spoken AI replies               |
-| `/speak off` | Disable spoken AI replies              |
-| `/clear`     | Clear the current conversation history |
-| `/exit`      | Exit the assistant                     |
+### API key missing or invalid
 
-## 🧰 Tools
+- Confirm that the correct provider key file exists.
+- Check that the key was entered correctly without printing it to the terminal.
+- Confirm that the provider account and API access are active.
+- Check the provider's usage limits and model availability.
 
-Depending on the installed version, the assistant can provide tools for:
+Check file permissions without displaying the key:
 
-* Listing files and directories
-* Reading text files
-* Creating and editing files
-* Deleting files and directories
-* Creating directories
-* Running shell commands
-* Starting a local Python HTTP server
-* Stopping a process by PID
-
-Operations that modify files, execute commands, or affect processes should require user confirmation.
-
-Always review the requested operation before approving it. Workspace restrictions are a safety measure, not a substitute for reviewing commands.
-
-## 📂 Project Structure
-
-```text
-Ai-Assistant/
-├── assistant.py    # Main AI agent and tools
-├── ui.py           # Terminal interface
-├── voice.py        # Optional voice helpers
-├── setup.sh        # Termux installation script
-└── README.md       # Project documentation
+```bash
+ls -l ~/.config/openrouter/key ~/.config/gemini/key
 ```
 
-## 🛠️ Troubleshooting
+A missing file may produce a warning; configure that provider using the installer or create its key file manually.
+
+### OpenRouter and Gemini both fail
+
+Check your internet connection, API keys, provider account limits, and selected model availability. Fallback cannot work if OpenRouter fails and Gemini is not configured or is also unavailable.
 
 ### The `ai` command is not found
 
-Check whether the setup script completed successfully and whether the launcher exists:
+Check whether the installer completed and whether the launcher exists:
 
 ```bash
 ls "$PREFIX/bin/ai"
 ```
 
-If the file is missing, review the output from `bash setup.sh`.
+### Voice input or speech is not working
 
-### OpenRouter API key error
+Check that the Termux:API Android app and `termux-api` package are installed, permissions are granted, and Android speech services are available.
 
-Verify that the key is valid and that the configuration file exists:
+## Security
 
-```bash
-cat ~/.config/openrouter/key
+- Keep API keys private and out of Git.
+- Key files should have permission `600`; their configuration directories should have permission `700`.
+- Never print or share key contents.
+- Review shell commands and destructive operations before approving them.
+- Back up important files before making automated changes.
+
+## Project Structure
+
+```text
+Ai-Assistant/
+├── assistant.py
+├── ui.py
+├── voice.py
+├── setup.sh
+└── README.md
 ```
 
-**Do not share the output of this command.** It displays your secret API key.
-
-If needed, edit the file locally:
-
-```bash
-nano ~/.config/openrouter/key
-chmod 600 ~/.config/openrouter/key
-```
-
-### Voice input is not working
-
-* Confirm that the Termux:API app is installed.
-* Confirm that the `termux-api` package is installed in Termux.
-* Grant the required microphone permissions.
-* Check that Android speech recognition is available.
-
-### Text-to-speech is not working
-
-* Confirm that Termux:API is installed and accessible.
-* Check Android text-to-speech settings.
-* Test whether the `termux-tts-speak` command is available.
-
-### A Python module is missing
-
-Review the setup output and install the missing dependency using the appropriate Termux package or Python package installer.
-
-### File access is blocked
-
-The assistant restricts file tools to its active workspace. Launch it from the directory you intend to work in and verify that the requested path is inside that workspace.
-
-## 🔒 Security
-
-Ai-Assistant can execute commands and modify files, so use it responsibly.
-
-* Review every command before approving it.
-* Avoid running unfamiliar or destructive commands.
-* Keep API keys and other secrets outside public repositories.
-* Do not assume workspace restrictions make every shell command safe.
-* Back up important files before allowing automated modifications.
-
-## 🔄 Updating
-
-To update an existing installation, follow the project's documented update procedure. Back up local changes before replacing any files.
-
-Do not overwrite local configuration or API key files when updating.
-
-## 📄 License
+## License
 
 Check the repository for the project's license and usage terms.
 
----
-
-**Made for Termux users who want an AI assistant in their terminal.** 🚀
-
+Made for Termux users who want an AI assistant in their terminal.
