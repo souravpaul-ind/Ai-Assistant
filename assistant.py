@@ -28,6 +28,18 @@ GEMINI_KEY_FILE = HOME / ".config" / "gemini" / "key"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 AI_WORKDIR = Path(os.environ.get("AI_WORKDIR", os.getcwd())).expanduser().resolve()
+APPROVE_MODE_FILE = HOME / ".config" / "ai-assistant" / "approve_mode"
+
+def approval_mode():
+    try:
+        return APPROVE_MODE_FILE.read_text(encoding="utf-8").strip().lower() == "on"
+    except OSError:
+        return False
+
+def set_approval_mode(enabled):
+    APPROVE_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    APPROVE_MODE_FILE.write_text("on" if enabled else "off", encoding="utf-8")
+
 
 try:
     from rich.console import Console
@@ -76,7 +88,10 @@ def show_error(message):
         say(f"Error: {message}")
 
 
-def approved(action):
+def approved(action, high_risk=True):
+    if approval_mode() and not high_risk:
+        say("Approval skipped (low-risk mode ON).")
+        return True
     if ui is not None and hasattr(ui, "ask_confirmation"):
         try:
             return ui.ask_confirmation(f"\n{action}")
@@ -180,7 +195,7 @@ def tool_delete_file(args):
 
 def tool_make_directory(args):
     path = safe_path(args["path"])
-    if not approved(f"Create directory: {path}"):
+    if not approved(f"Create directory: {path}", high_risk=False):
         return "Cancelled by user."
     path.mkdir(parents=True, exist_ok=True)
     return f"Directory ready: {path}"
@@ -416,6 +431,8 @@ def command_help():
         "/listen": "Recognize speech and send it to the AI",
         "/speak on": "Enable spoken AI replies",
         "/speak off": "Disable spoken AI replies",
+        "/approve on": "Skip approval for designated low-risk actions",
+        "/approve off": "Require approval for protected actions",
         "/clear": "Clear conversation history",
         "/exit": "Exit the assistant",
     }
@@ -493,6 +510,17 @@ def main():
                 else:
                     os.system("clear")
                 print("Chat cleared.")
+                continue
+            if normalized == "/approve on":
+                set_approval_mode(True)
+                print("Approval mode ON: low-risk actions can skip approval; high-risk actions still require it.")
+                continue
+            if normalized == "/approve off":
+                set_approval_mode(False)
+                print("Approval mode OFF: all protected actions require approval.")
+                continue
+            if normalized.startswith("/approve"):
+                print("Use /approve on or /approve off.")
                 continue
             if normalized == "/speak on":
                 auto_speech_enabled = True
