@@ -22,7 +22,7 @@ warning() { printf '%s[ ! ]%s %s\n' "$YELLOW" "$R" "$*"; }
 error()   { printf '%s[ERROR]%s %s\n' "$RED" "$R" "$*" >&2; exit 1; }
 
 [[ -n "${PREFIX:-}" && -x "$PREFIX/bin" ]] || error "Run this installer inside Termux."
-[[ -f "$SOURCE_DIR/assistant.py" && -f "$SOURCE_DIR/ui.py" && -f "$SOURCE_DIR/voice.py" ]] || error "Run setup.sh from the project directory containing assistant.py, ui.py, and voice.py."
+[[ -f "$SOURCE_DIR/assistant.py" && -f "$SOURCE_DIR/ui.py" && -f "$SOURCE_DIR/voice.py" && -f "$SOURCE_DIR/project_memory.py" ]] || error "Run setup.sh from the project directory containing assistant.py, ui.py, voice.py, and project_memory.py."
 
 printf '%s\n' "${CYAN}${B}AI-ASSISTANT | TERMUX INSTALLER${R}" ""
 info "Checking Python..."
@@ -49,18 +49,18 @@ mkdir -p "$PREFIX/share" "$PREFIX/bin"
 if [[ -e "$INSTALL_DIR" ]]; then
     [[ -d "$INSTALL_DIR" ]] || error "Install path exists but is not a directory: $INSTALL_DIR"
     # Update only the named project files from this local source folder; no network access.
-    for file in assistant.py ui.py voice.py README.md; do
+    for file in assistant.py ui.py voice.py project_memory.py README.md; do
         if [[ -f "$SOURCE_DIR/$file" ]]; then
             cp "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
         fi
     done
 else
     mkdir -p "$INSTALL_DIR"
-    for file in assistant.py ui.py voice.py README.md; do
+    for file in assistant.py ui.py voice.py project_memory.py README.md; do
         [[ ! -f "$SOURCE_DIR/$file" ]] || cp "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
     done
 fi
-chmod 600 "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" 2>/dev/null || true
+chmod 600 "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" "$INSTALL_DIR/project_memory.py" 2>/dev/null || true
 
 info "Checking AI provider API keys..."
 
@@ -124,7 +124,7 @@ LAUNCHER_EOF
 chmod 700 "$LAUNCHER"
 
 # Syntax check the installed Python files without making network requests.
-python -m py_compile "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" || error "Python syntax check failed."
+python -m py_compile "$INSTALL_DIR/assistant.py" "$INSTALL_DIR/ui.py" "$INSTALL_DIR/voice.py" "$INSTALL_DIR/project_memory.py" || error "Python syntax check failed."
 
 success "Installation complete."
 printf '\nProject directory: %s\nLauncher:          %s\n\n' "$INSTALL_DIR" "$LAUNCHER"

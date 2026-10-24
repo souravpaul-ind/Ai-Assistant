@@ -18,6 +18,11 @@ env/
 
 # Logs
 *.log
+http-server.log
+
+# Project memory (actual memory lives in ~/.config/ai-assistant/projects/)
+.ai-assistant/
+*.json.tmp
 
 # Editor and OS files
 .vscode/

@@ -131,6 +131,41 @@ Depending on the installed version, the assistant can list, read, create, edit, 
 
 Review every requested operation before approving it. Workspace restrictions do not make every shell command safe.
 
+## Project Memory (Resume Projects)
+
+The assistant can remember a project across sessions.
+
+Memory is stored **outside** the workspace:
+
+
+Each workspace gets its own file. Secrets/API keys are redacted before saving.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/project init` | Scan workspace and create memory file (read-only) |
+| `/project save` | Checkpoint current state |
+| `/project resume` | Load memory and print summary (inspection-only) |
+| `/project sync` | Copy source files into `$PREFIX` install directory |
+
+### Automatic resume
+
+On startup, if memory exists for the current workspace:
+
+
+- `y` — show summary and inject into AI system prompt
+- `n` — start fresh; memory remains on disk
+
+### Auto-save
+
+Successful write/edit/delete/make_directory triggers a silent checkpoint.
+
+### Sync installed copy
+
+Use `/project sync` inside the assistant, or manually:
+
+
 ## Troubleshooting
 
 ### API key missing or invalid
