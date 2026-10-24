@@ -1,3 +1,5 @@
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 # 🤖 Ai-Assistant
 
 ![Toolify Review](image-1.jpg)
@@ -272,9 +274,8 @@ Ai-Assistant/
 └── README.md           # This file
 ```
 
-## License
+## 📄 License
 
-Check the repository for the project's license and usage terms.
-
-Made for Termux users who want an AI assistant in their terminal.
+This project is licensed under the **MIT License**. 
+See the [LICENSE](LICENSE) file for more details.
 ```
