@@ -63,7 +63,19 @@ development tasks may proceed without repeated prompts. Always require
 confirmation for deletion, process termination, destructive/system-level
 commands, and suspicious or potentially harmful actions. Never claim an action
 succeeded unless its tool confirms success. Do not request root access or use
-sudo/su. Do not expose API keys or secrets.
+sudo/su. Do not expose API keys or secrets. If the user's request is vague
+(e.g. "retry"), first ask what specifically to retry — do NOT guess and loop.
+Never call the same tool with the same arguments more than once per prompt.
+If you have made 3+ tool calls and are not making progress, stop and summarize.
+
+IMPORTANT server tool distinction:
+- `start_server` runs Python's built-in `http.server` — a STATIC file server
+  only. It does NOT run custom logic like /login endpoints.
+- To run a custom server script (e.g. server.py with login, auth, database),
+  use `run_command` with a background launch like:
+      nohup python3 server.py > server.log 2>&1 &
+  then check server.log for startup confirmation.
+- Do not retry start_server if the app needs custom routes.
 A persistent project memory feature is available via /project init, /project
 save, and /project resume. Never invent tests or completed work; only mark
 items as done when there is real evidence in the session.
@@ -108,9 +120,14 @@ def set_approval_mode(enabled):
     APPROVE_MODE_FILE.write_text("on" if enabled else "off", encoding="utf-8")
 
 
+_APPROVAL_NOTICE_SHOWN = {"seen": False}
+
+
 def approved(action, high_risk=True):
     if approval_mode() and not high_risk:
-        say("Approval skipped (low-risk mode ON).")
+        if not _APPROVAL_NOTICE_SHOWN["seen"]:
+            say("Approval skipped (low-risk mode ON).")
+            _APPROVAL_NOTICE_SHOWN["seen"] = True
         return True
     if ui is not None and hasattr(ui, "ask_confirmation"):
         try:
@@ -503,8 +520,25 @@ def tool_stop_process(args):
         return f"Could not stop PID {pid}: {exc}"
 
 
+_LIVE_PROGRESS = True
+
+
 def _with_autosave(fn, tool_name):
     def wrapper(args):
+        # Show a one-line progress notice BEFORE running the tool, so the
+        # terminal never looks "hung" during slow operations.
+        hint = ""
+        if tool_name == "run_command" and isinstance(args, dict):
+            cmd = str(args.get("command", ""))[:60]
+            hint = f" -> {cmd}"
+        elif tool_name == "start_server" and isinstance(args, dict):
+            hint = f" -> port {args.get('port','?')}"
+        elif tool_name == "stop_process" and isinstance(args, dict):
+            hint = f" -> PID {args.get('pid','?')}"
+        elif tool_name in ("write_file", "edit_file", "delete_file") and isinstance(args, dict):
+            hint = f" -> {args.get('path','?')}"
+        if hint:
+            say(f"[{tool_name}] running{hint}...")
         result = fn(args)
         try:
             if isinstance(result, str) and not result.startswith(("Cancelled", "Error", "Blocked")):
@@ -523,9 +557,9 @@ DISPATCH = {
     "edit_file": _with_autosave(tool_edit_file, "edit_file"),
     "delete_file": _with_autosave(tool_delete_file, "delete_file"),
     "make_directory": _with_autosave(tool_make_directory, "make_directory"),
-    "run_command": tool_run_command,
-    "start_server": tool_start_server,
-    "stop_process": tool_stop_process,
+    "run_command": _with_autosave(tool_run_command, "run_command"),
+    "start_server": _with_autosave(tool_start_server, "start_server"),
+    "stop_process": _with_autosave(tool_stop_process, "stop_process"),
 }
 
 
@@ -693,7 +727,13 @@ def call_gemini_native(history):
             answer = response.text
             if answer:
                 return answer
-            raise RuntimeError("Gemini returned neither text nor function calls.")
+            # No text, no calls: append a synthetic user nudge so the next
+            # retry does not end on a model turn (Gemini rejects that).
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part.from_text(text="Continue or summarize what you have done.")],
+            ))
+            continue
         function_responses = []
         for call in calls:
             name = call.name or ""
@@ -710,8 +750,16 @@ def call_gemini_native(history):
     return "Stopped after 8 tool rounds to prevent an endless loop."
 
 
+_LOOP_GUARD_PATCHED = True
+
+
+_TOOL_CALL_CAP = True
+
+
 def ask_agent(history):
-    for _ in range(8):
+    _seen_calls = set()
+    _call_counts = {}
+    for _round in range(8):
         try:
             if RICH:
                 with console.status("[cyan]Thinking...[/cyan]"):
@@ -719,7 +767,11 @@ def ask_agent(history):
             else:
                 print("Thinking...")
                 response = call_api(history)
-            message = response["choices"][0]["message"]
+            choices = response.get("choices") or []
+            if not choices:
+                err_detail = response.get("error") or response.get("message") or "empty choices"
+                raise RuntimeError(f"OpenRouter returned no choices: {err_detail}")
+            message = choices[0].get("message") or {}
         except Exception as openrouter_error:
             if RICH:
                 with console.status("[cyan]Trying native Gemini...[/cyan]"):
@@ -748,8 +800,34 @@ def ask_agent(history):
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
             name = function.get("name", "")
+            args_raw = function.get("arguments") or "{}"
+            call_key = (name, args_raw)
+            if call_key in _seen_calls:
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id", ""),
+                    "content": f"Skipped: identical '{name}' call was already executed this turn. Do not repeat it.",
+                })
+                continue
+            _seen_calls.add(call_key)
+            # Hard cap: no single tool more than 3 times, no prompt more than 6 calls total
+            _call_counts[name] = _call_counts.get(name, 0) + 1
+            if _call_counts[name] > 3:
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id", ""),
+                    "content": f"Blocked: '{name}' has already been called 3 times this prompt. Stop and summarize what you have done so far.",
+                })
+                continue
+            if sum(_call_counts.values()) > 6:
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id", ""),
+                    "content": "Blocked: too many tool calls this prompt (limit 6). Summarize your progress and let the user decide the next step.",
+                })
+                continue
             try:
-                arguments = json.loads(function.get("arguments") or "{}")
+                arguments = json.loads(args_raw)
                 result = DISPATCH[name](arguments) if name in DISPATCH else "Error: unknown tool."
             except Exception as exc:
                 result = f"Tool error: {type(exc).__name__}: {exc}"
@@ -864,9 +942,24 @@ def _autosave_after_mutation(tool_name):
         mem = project_memory.load(str(AI_WORKDIR), store=str(PROJECT_MEMORY_STORE))
         if mem is None:
             return False
+        _AUTOSAVE_DEDUP = True
         note = f"Autosave after {tool_name} at {project_memory._utcnow()}"
         state = mem.get("current_state") or []
-        state.append(note)
+        # Skip if the same tool ran within the last 2 seconds (loop/spam guard).
+        import time as _time
+        recent_same = False
+        for prev in state[-3:]:
+            if isinstance(prev, str) and prev.startswith(f"Autosave after {tool_name} at "):
+                try:
+                    ts = prev.rsplit(" at ", 1)[1]
+                    prev_epoch = __import__("datetime").datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
+                    if abs(_time.time() - prev_epoch) < 2.0:
+                        recent_same = True
+                        break
+                except Exception:
+                    pass
+        if not recent_same:
+            state.append(note)
         mem["current_state"] = state[-50:]
         project_memory.checkpoint(str(AI_WORKDIR), mem, store=str(PROJECT_MEMORY_STORE))
         return True
@@ -1116,7 +1209,13 @@ def main():
             user_text = get_input()
             if not user_text:
                 continue
+            _APPROVAL_NOTICE_SHOWN["seen"] = False
             normalized = " ".join(user_text.lower().split())
+            # Handle vague "retry" prompts — no reference to retry.
+            if normalized in {"retry", "again", "try again", "do it again"}:
+                say("Retry what? Please be specific (e.g. 'start server on port 8888', 're-run the test', 'list files').")
+                continue
+            _RETRY_HINT = True
             if normalized in {"/exit", "exit", "quit"}:
                 checkpoint_on_exit()
                 print("Bye!")
