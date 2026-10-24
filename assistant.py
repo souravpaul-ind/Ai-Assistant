@@ -55,11 +55,13 @@ SYSTEM = f"""You are a helpful terminal AI agent running in Termux on Android.
 You can inspect, create, edit, and delete files; create directories; run shell
 commands; start local Python HTTP servers; and stop processes using tools.
 The active workspace is {AI_WORKDIR}. Prefer working inside that workspace.
-File tools are restricted to this workspace. The user must approve every file
-change, shell command, server start, or process termination. Never claim an
-action succeeded unless its tool confirms success. Be concise and clear.
-Do not request root access or use sudo/su. Do not expose API keys or secrets.
-Explain commands before asking for approval. Never bypass approval.
+Prefer working inside the active workspace. Outside-workspace file access
+requires explicit approval. With /approve on, routine workspace file creation,
+editing, directory creation, and local development tasks may proceed without
+repeated prompts. Always require confirmation for deletion, process termination,
+destructive/system-level commands, and suspicious or potentially harmful actions.
+Never claim an action succeeded unless its tool confirms success. Do not request
+root access or use sudo/su. Do not expose API keys or secrets.
 """
 
 TOOLS = [
@@ -117,10 +119,11 @@ def safe_path(raw="."):
     if not raw_path.is_absolute():
         raw_path = AI_WORKDIR / raw_path
     path = raw_path.resolve()
-    if path != AI_WORKDIR and AI_WORKDIR not in path.parents:
-        raise ValueError(f"Blocked: file tools are limited to the active workspace: {AI_WORKDIR}")
     if is_secret_path(path):
-        raise ValueError("Blocked: the OpenRouter API key is protected and cannot be accessed by file tools.")
+        raise ValueError("Blocked: API key files are protected and cannot be accessed by file tools.")
+    if path != AI_WORKDIR and AI_WORKDIR not in path.parents:
+        if not approved(f"Access path outside the active workspace:\n{path}", high_risk=True):
+            raise PermissionError("Outside-workspace access denied by user.")
     return path
 
 
@@ -151,7 +154,9 @@ def tool_read_file(args):
 def tool_write_file(args):
     path = safe_path(args["path"])
     content = str(args["content"])
-    if not approved(f"Write file: {path}\nBytes: {len(content.encode('utf-8'))}"):
+    outside = path != AI_WORKDIR and AI_WORKDIR not in path.parents
+    if not approved(f"Write file: {path}\nBytes: {len(content.encode('utf-8'))}",
+                    high_risk=outside):
         return "Cancelled by user."
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -169,7 +174,9 @@ def tool_edit_file(args):
     if old_text not in content:
         return "Error: exact old_text was not found; file unchanged."
     updated = content.replace(old_text, str(args["new_text"]), 1)
-    if not approved(f"Edit file: {path}\nReplace the first matching text?"):
+    outside = path != AI_WORKDIR and AI_WORKDIR not in path.parents
+    if not approved(f"Edit file: {path}\nReplace the first matching text?",
+                    high_risk=outside):
         return "Cancelled by user."
     path.write_text(updated, encoding="utf-8")
     return f"Updated: {path}"
@@ -196,7 +203,8 @@ def tool_delete_file(args):
 
 def tool_make_directory(args):
     path = safe_path(args["path"])
-    if not approved(f"Create directory: {path}", high_risk=False):
+    outside = path != AI_WORKDIR and AI_WORKDIR not in path.parents
+    if not approved(f"Create directory: {path}", high_risk=outside):
         return "Cancelled by user."
     path.mkdir(parents=True, exist_ok=True)
     return f"Directory ready: {path}"
@@ -216,7 +224,25 @@ def tool_run_command(args):
     secret_patterns = (".config/openrouter/key", ".config/gemini/key", ".config/gemini-assistant/key")
     if any(pattern in lowered for pattern in secret_patterns):
         return "Blocked: commands may not directly reference known API-key files."
-    if not approved(f"Run shell command in {AI_WORKDIR}:\n{command}"):
+    # Conservative risk screening: uncertain commands still require approval.
+    risky_tokens = (
+        "rm ", "rm-", "rmdir", "shred", "unlink", "dd ", "mkfs",
+        "format ", "fdisk", "parted", "wipe", "reboot", "shutdown",
+        "poweroff", "halt", "su ", "sudo", "doas", "tsu",
+        "kill ", "killall", "pkill", "chmod ", "chown ",
+        "iptables", "setprop", "curl ", "wget ", "nc ", "netcat",
+        "base64", "eval ", "exec ", ">/", ">>/",
+    )
+    risky = any(token in lowered for token in risky_tokens)
+    outside_refs = any(
+        word.startswith("/") and not (
+            word == str(AI_WORKDIR) or word.startswith(str(AI_WORKDIR) + "/")
+        )
+        for word in words
+    )
+    high_risk = risky or outside_refs
+    if not approved(f"Run shell command in {AI_WORKDIR}:\n{command}",
+                    high_risk=high_risk):
         return "Cancelled by user."
     try:
         result = subprocess.run(
@@ -244,7 +270,9 @@ def tool_start_server(args):
         return "Error: server path must be an existing workspace directory."
     if not 1024 <= port <= 65535:
         return "Error: choose a port between 1024 and 65535."
-    if not approved(f"Start local Python HTTP server:\nDirectory: {path}\nPort: {port}\nURL: http://127.0.0.1:{port}"):
+    outside = path != AI_WORKDIR and AI_WORKDIR not in path.parents
+    if not approved(f"Start local Python HTTP server:\nDirectory: {path}\nPort: {port}\nURL: http://127.0.0.1:{port}",
+                    high_risk=outside):
         return "Cancelled by user."
     log_path = AI_WORKDIR / "http-server.log"
     try:
