@@ -1,5 +1,6 @@
-```markdown
 # 🤖 Ai-Assistant
+
+![Toolify Review](image-1.jpg)
 
 A personal AI assistant for Termux on Android, with OpenRouter and optional Google Gemini support. It also offers workspace file tools, shell command execution with confirmation, persistent per-project memory, and optional voice interaction.
 
