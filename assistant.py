@@ -29,6 +29,7 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 AI_WORKDIR = Path(os.environ.get("AI_WORKDIR", os.getcwd())).expanduser().resolve()
 APPROVE_MODE_FILE = HOME / ".config" / "ai-assistant" / "approve_mode"
+SPEAK_MODE_FILE = HOME / ".config" / "ai-assistant" / "speak_mode"
 
 def approval_mode():
     try:
@@ -368,6 +369,37 @@ def call_api(messages):
     except Exception as exc:
         errors.append(str(exc))
 
+    def gemini_compatible_messages(history):
+        # Gemini must not receive incomplete historical tool-call records.
+        # Preserve system/user/assistant text and retain tool results as text.
+        converted = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+
+            role = item.get("role", "")
+            content = item.get("content")
+
+            if role == "tool":
+                tool_id = item.get("tool_call_id", "")
+                result_text = str(content or "")
+                converted.append({
+                    "role": "user",
+                    "content": (
+                        f"Previous tool result (call {tool_id}):\\n"
+                        f"{result_text}"
+                    ),
+                })
+            elif role in ("system", "user", "assistant"):
+                if content is not None and content != "":
+                    converted.append({
+                        "role": role,
+                        "content": content,
+                    })
+                # Deliberately omit old assistant tool_calls: their
+                # provider-specific thought signatures may be unavailable.
+        return converted
+
     # If OpenRouter fails, try Gemini Flash.
     try:
         if not GEMINI_KEY_FILE.is_file():
@@ -378,7 +410,7 @@ def call_api(messages):
 
         payload = {
             "model": "gemini-3.5-flash-lite",
-            "messages": messages,
+            "messages": gemini_compatible_messages(messages),
             "tools": TOOLS,
             "tool_choice": "auto",
             "temperature": 0.3,
@@ -393,22 +425,143 @@ def call_api(messages):
     summary = "\\n".join(f"- {e}" for e in errors)
     raise RuntimeError("All AI providers failed:\\n" + summary)
 
+
+def call_gemini_native(history):
+    """Use Google's native SDK so Gemini function-call signatures survive tool rounds."""
+    from google import genai
+    from google.genai import types
+
+    if not GEMINI_KEY_FILE.is_file():
+        raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
+    key = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip()
+    if not key:
+        raise RuntimeError("Gemini key file is empty.")
+
+    client = genai.Client(api_key=key)
+    declarations = []
+    for item in TOOLS:
+        function = item.get("function", {})
+        if not function.get("name"):
+            continue
+        schema = function.get("parameters") or {
+            "type": "object", "properties": {}
+        }
+        declarations.append(types.FunctionDeclaration(
+            name=function["name"],
+            description=function.get("description", ""),
+            parameters_json_schema=schema,
+        ))
+
+    system_text = "\n".join(
+        str(item.get("content", ""))
+        for item in history
+        if isinstance(item, dict) and item.get("role") == "system"
+        and item.get("content")
+    )
+
+    # Rebuild only plain-text conversation context. Do not replay old provider-
+    # specific tool-call records; native Gemini Content objects are kept intact
+    # during the current turn below.
+    contents = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str) or not content:
+            continue
+        contents.append(types.Content(
+            role="user" if role == "user" else "model",
+            parts=[types.Part.from_text(text=content)],
+        ))
+
+    if not contents:
+        contents = [types.Content(
+            role="user", parts=[types.Part.from_text(text="Hello")]
+        )]
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_text or None,
+        tools=[types.Tool(function_declarations=declarations)] if declarations else None,
+        temperature=0.3,
+    )
+
+    for _ in range(8):
+        response = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=contents,
+            config=config,
+        )
+
+        candidate_content = None
+        if response.candidates:
+            candidate_content = response.candidates[0].content
+
+        if candidate_content is not None:
+            # Keep the original SDK Content, including thought_signature bytes.
+            contents.append(candidate_content)
+
+        calls = list(response.function_calls or [])
+        if not calls:
+            answer = response.text
+            if answer:
+                return answer
+            raise RuntimeError("Gemini returned neither text nor function calls.")
+
+        function_responses = []
+        for call in calls:
+            name = call.name or ""
+            try:
+                arguments = dict(call.args or {})
+                if name in DISPATCH:
+                    result = DISPATCH[name](arguments)
+                else:
+                    result = "Error: unknown tool."
+            except Exception as exc:
+                result = f"Tool error: {type(exc).__name__}: {exc}"
+
+            function_responses.append(types.Part.from_function_response(
+                name=name or "unknown_tool",
+                response={"result": str(result)[:15000]},
+            ))
+
+        contents.append(types.Content(role="user", parts=function_responses))
+
+    return "Stopped after 8 tool rounds to prevent an endless loop."
+
+
 def ask_agent(history):
     for _ in range(8):
-        if RICH:
-            with console.status("[cyan]Thinking...[/cyan]"):
-                response = call_api(history)
-        else:
-            print("Thinking...")
-            response = call_api(history)
         try:
+            if RICH:
+                with console.status("[cyan]Thinking...[/cyan]"):
+                    response = call_api(history)
+            else:
+                print("Thinking...")
+                response = call_api(history)
+
             message = response["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError):
-            raise RuntimeError("OpenRouter returned an unexpected response format.") from None
+        except Exception as openrouter_error:
+            # call_api already tries its compatible Gemini endpoint. If both
+            # providers fail, use Gemini's native SDK for signature-safe tools.
+            if RICH:
+                with console.status("[cyan]Trying native Gemini...[/cyan]"):
+                    return call_gemini_native(history)
+            print("Trying native Gemini...")
+            try:
+                return call_gemini_native(history)
+            except Exception as gemini_error:
+                raise RuntimeError(
+                    "AI providers failed.\n"
+                    f"Chat API: {openrouter_error}\n"
+                    f"Native Gemini: {gemini_error}"
+                ) from None
+
         history.append(message)
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
             return message.get("content") or "(No text response)"
+
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
             name = function.get("name", "")
@@ -420,7 +573,7 @@ def ask_agent(history):
             history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.get("id", ""),
-                "content": str(result)[:15_000],
+                "content": str(result)[:15000],
             })
     return "Stopped after 8 tool rounds to prevent an endless loop."
 
@@ -490,7 +643,11 @@ def show_reply(answer):
 def main():
     show_welcome()
     history = [{"role": "system", "content": SYSTEM}]
-    auto_speech_enabled = False
+    try:
+        auto_speech_enabled = SPEAK_MODE_FILE.read_text(encoding="utf-8").strip().lower() == "on"
+    except OSError:
+        auto_speech_enabled = False
+
     while True:
         try:
             user_text = get_input()
@@ -524,10 +681,14 @@ def main():
                 continue
             if normalized == "/speak on":
                 auto_speech_enabled = True
+                SPEAK_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                SPEAK_MODE_FILE.write_text("on", encoding="utf-8")
                 print("Voice replies ON. Normal AI replies will be spoken.")
                 continue
             if normalized == "/speak off":
                 auto_speech_enabled = False
+                SPEAK_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                SPEAK_MODE_FILE.write_text("off", encoding="utf-8")
                 print("Voice replies OFF. AI replies will remain text-only.")
                 continue
             if normalized.startswith("/speak"):

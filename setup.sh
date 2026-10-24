@@ -28,6 +28,14 @@ printf '%s\n' "${CYAN}${B}AI-ASSISTANT | TERMUX INSTALLER${R}" ""
 info "Checking Python..."
 command -v python >/dev/null 2>&1 || error "Python 3 is missing. Install it with: pkg install python"
 
+# Required SDK for native Gemini function calling and signature-safe tool history.
+info "Checking Google GenAI SDK..."
+if ! python -c 'from google import genai' >/dev/null 2>&1; then
+    info "Installing google-genai..."
+    python -m pip install --user google-genai || error "Could not install google-genai. Check internet and pip."
+fi
+python -c 'from google import genai' >/dev/null 2>&1 || error "google-genai is not importable by this Python."
+
 # Rich is optional: the assistant has a plain terminal fallback.
 if ! python -c 'import rich' >/dev/null 2>&1; then
     warning "Python module 'rich' is missing; attempting to install it for the enhanced terminal UI."
@@ -43,10 +51,6 @@ if [[ -e "$INSTALL_DIR" ]]; then
     # Update only the named project files from this local source folder; no network access.
     for file in assistant.py ui.py voice.py README.md; do
         if [[ -f "$SOURCE_DIR/$file" ]]; then
-            if [[ -f "$INSTALL_DIR/$file" ]] && ! cmp -s "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"; then
-                cp -p "$INSTALL_DIR/$file" "$INSTALL_DIR/$file.bak" 2>/dev/null || true
-                warning "Backed up existing $file to $file.bak before replacing it."
-            fi
             cp "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
         fi
     done
