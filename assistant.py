@@ -32,6 +32,7 @@ except ImportError:
 HOME = Path.home().resolve()
 KEY_FILE = HOME / ".config" / "openrouter" / "key"
 GEMINI_KEY_FILE = HOME / ".config" / "gemini" / "key"
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 AI_WORKDIR = Path(os.environ.get("AI_WORKDIR", os.getcwd())).expanduser().resolve()
@@ -644,25 +645,31 @@ def call_api(messages, status=None):
                 converted.append({"role": role, "content": content})
         return converted
 
-    try:
-        if not GEMINI_KEY_FILE.is_file():
-            raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
-        key = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip()
-        if not key:
-            raise RuntimeError("Gemini key file is empty.")
-        payload = {
-            "model": "gemini-3.5-flash-lite",
-            "messages": gemini_compatible_messages(messages),
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "temperature": 0.3,
-        }
-        return request_json(
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            payload, key, "Gemini",
-        )
-    except Exception as exc:
-        errors.append(str(exc))
+    for g_model in GEMINI_MODELS:
+        try:
+            if not GEMINI_KEY_FILE.is_file():
+                raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
+            key = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip()
+            if not key:
+                raise RuntimeError("Gemini key file is empty.")
+            payload = {
+                "model": g_model,
+                "messages": gemini_compatible_messages(messages),
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "temperature": 0.3,
+            }
+            return request_json(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                payload, key, "Gemini",
+            )
+        except Exception as exc:
+            err_str = str(exc)
+            if "429" in err_str or "quota" in err_str.lower():
+                # Model limit hit, try next one silently
+                continue
+            errors.append(err_str)
+            break
 
     summary = "\n".join(f"- {e}" for e in errors)
     raise RuntimeError("All AI providers failed:\n" + summary)
@@ -718,47 +725,45 @@ def call_gemini_native(history, status=None):
         temperature=0.3,
     )
 
+    current_model_idx = 0
     for _ in range(60):
         try:
             response = client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model=GEMINI_MODELS[current_model_idx],
                 contents=contents,
                 config=config,
             )
         except Exception as exc:
             msg = str(exc)
             if "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
-                delay = 15
-                match = re.search(r'retry in ([\d\.]+)s', msg) or re.search(r'retryDelay.*?(\d+)s', msg)
-                if match:
-                    delay = int(float(match.group(1))) + 2
-                msg = f"Gemini Rate limit hit. Auto-waiting {delay} seconds..."
-                if status:
-                    status.update(f"[bold yellow]{msg}[/bold yellow]")
+                if current_model_idx + 1 < len(GEMINI_MODELS):
+                    current_model_idx += 1
+                    new_model = GEMINI_MODELS[current_model_idx]
+                    if status:
+                        status.update(f"[bold yellow]Model limit hit. Switching to {new_model}...[/bold yellow]")
+                    else:
+                        say(f"\n[Gemini Native] Model limit hit. Switching to {new_model}...")
+                    time.sleep(2)
+                    continue
                 else:
-                    say(f"\n[Gemini Native] {msg}")
-                
-                time.sleep(delay)
-                
-                if status:
-                    status.update("[cyan]Thinking...[/cyan]")
-                continue
+                    raise RuntimeError("All Gemini models hit their daily rate limit. Please try again later.")
             raise
+
         candidate_content = response.candidates[0].content if response.candidates else None
         if candidate_content is not None:
             contents.append(candidate_content)
+        
         calls = list(response.function_calls or [])
         if not calls:
             answer = response.text
             if answer:
                 return answer
-            # No text, no calls: append a synthetic user nudge so the next
-            # retry does not end on a model turn (Gemini rejects that).
             contents.append(types.Content(
                 role="user",
                 parts=[types.Part.from_text(text="Continue or summarize what you have done.")],
             ))
             continue
+            
         function_responses = []
         for call in calls:
             name = call.name or ""
@@ -772,14 +777,8 @@ def call_gemini_native(history, status=None):
                 response={"result": str(result)[:15000]},
             ))
         contents.append(types.Content(role="user", parts=function_responses))
-    return "Stopped after 8 tool rounds to prevent an endless loop."
-
-
-_LOOP_GUARD_PATCHED = True
-
-
-_TOOL_CALL_CAP = True
-
+    
+    return "Stopped after 60 tool rounds to prevent an endless loop."
 
 def ask_agent(history):
     _seen_calls = set()
@@ -799,9 +798,9 @@ def ask_agent(history):
             message = choices[0].get("message") or {}
         except Exception as openrouter_error:
             if RICH:
-                with console.status("[cyan]Trying native Gemini...[/cyan]"):
+                with console.status("[cyan]Trying native Gemini...[/cyan]") as status_gem:
                     try:
-                        return call_gemini_native(history, status=status)
+                        return call_gemini_native(history, status=status_gem)
                     except Exception as gemini_error:
                         raise RuntimeError(
                             "AI providers failed.\n"
@@ -810,7 +809,7 @@ def ask_agent(history):
                         ) from None
             print("Trying native Gemini...")
             try:
-                return call_gemini_native(history, status=status)
+                        return call_gemini_native(history, status=status_gem)
             except Exception as gemini_error:
                 raise RuntimeError(
                     "API Limit Reached (Free Tier). Please wait 1 minute and type 'retry'."
