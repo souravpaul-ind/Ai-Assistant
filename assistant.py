@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -336,6 +337,41 @@ def _command_is_high_risk(command):
 
 _FRIENDLY_ERRORS = True
 _CLEAN_ERRORS_V2 = True
+
+# ---- API Cooldown System (Circuit Breaker) ----
+_COOLDOWN_FILE = HOME / ".config" / "ai-assistant" / "cooldowns.json"
+_COOLDOWN_PATCHED = True
+
+def _get_cooldowns():
+    if not _COOLDOWN_FILE.exists():
+        return {}
+    try:
+        import json as _json
+        return _json.loads(_COOLDOWN_FILE.read_text())
+    except Exception:
+        return {}
+
+def _set_cooldown(key, hours=24):
+    import json as _json
+    import time as _time
+    cd = _get_cooldowns()
+    cd[key] = _time.time() + (hours * 3600)
+    _COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _COOLDOWN_FILE.write_text(_json.dumps(cd))
+
+def _is_on_cooldown(key):
+    import time as _time
+    cd = _get_cooldowns()
+    if key in cd:
+        if _time.time() < cd[key]:
+            return True
+        else:
+            # Cooldown expired, remove it
+            del cd[key]
+            import json as _json
+            _COOLDOWN_FILE.write_text(_json.dumps(cd))
+    return False
+
 # ---- Hardened shell detection (shlex-aware, v2) ----
 _HARDENED_SHELL_DETECT_V2 = True
 
@@ -646,6 +682,8 @@ def call_api(messages, status=None):
         return converted
 
     for g_model in GEMINI_MODELS:
+        if _is_on_cooldown(g_model):
+            continue
         try:
             if not GEMINI_KEY_FILE.is_file():
                 raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
@@ -666,7 +704,7 @@ def call_api(messages, status=None):
         except Exception as exc:
             err_str = str(exc)
             if "429" in err_str or "quota" in err_str.lower():
-                # Model limit hit, try next one silently
+                _set_cooldown(g_model, 24)
                 continue
             errors.append(err_str)
             break
@@ -726,27 +764,54 @@ def call_gemini_native(history, status=None):
     )
 
     current_model_idx = 0
+    
+    # Skip models already on cooldown
+    while current_model_idx < len(GEMINI_MODELS) and _is_on_cooldown(GEMINI_MODELS[current_model_idx]):
+        current_model_idx += 1
+        
+    if current_model_idx >= len(GEMINI_MODELS):
+        raise RuntimeError("All Gemini models are on 24h cooldown. Please try again tomorrow.")
+
     for _ in range(60):
         try:
+            current_model = GEMINI_MODELS[current_model_idx]
             response = client.models.generate_content(
-                model=GEMINI_MODELS[current_model_idx],
+                model=current_model,
                 contents=contents,
                 config=config,
             )
         except Exception as exc:
-            msg = str(exc)
-            if "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg or "high demand" in msg:
-                if current_model_idx + 1 < len(GEMINI_MODELS):
-                    current_model_idx += 1
+            msg = str(exc).lower()
+            
+            # 1. Fatal Errors (Wrong API Key, Bad Request) -> Stop immediately
+            if "401" in msg or "invalid api key" in msg or "403" in msg or "400" in msg:
+                raise RuntimeError(f"Fatal API Error: {str(exc)[:100]}. Please check your API key.")
+                
+            # 2. Quota Limits (429) -> 24h Cooldown
+            is_quota = "429" in msg or "quota" in msg or "resource_exhausted" in msg
+            if is_quota:
+                _set_cooldown(current_model, 24)
+                
+            # 3. Transient Errors (503, 500, Timeout) -> No cooldown, just switch model
+            is_transient = "503" in msg or "500" in msg or "unavailable" in msg or "timeout" in msg or "deadline" in msg
+            
+            if is_quota or is_transient:
+                next_idx = current_model_idx + 1
+                while next_idx < len(GEMINI_MODELS) and _is_on_cooldown(GEMINI_MODELS[next_idx]):
+                    next_idx += 1
+                    
+                if next_idx < len(GEMINI_MODELS):
+                    current_model_idx = next_idx
                     new_model = GEMINI_MODELS[current_model_idx]
+                    reason = "Limit hit" if is_quota else "Server busy"
                     if status:
-                        status.update(f"[bold yellow]Model busy/limit hit. Switching to {new_model}...[/bold yellow]")
+                        status.update(f"[bold yellow]{reason}. Switching to {new_model}...[/bold yellow]")
                     else:
-                        say(f"\n[Gemini Native] Model busy/limit hit. Switching to {new_model}...")
-                    time.sleep(3)
+                        say(f"\n[Gemini Native] {reason}. Switching to {new_model}...")
+                    time.sleep(0.5)
                     continue
                 else:
-                    raise RuntimeError("All Gemini models are busy or hit their daily limit. Please try again later.")
+                    raise RuntimeError("All Gemini models are busy or hit their limit. Please try again later.")
             raise
 
         candidate_content = response.candidates[0].content if response.candidates else None
@@ -780,6 +845,27 @@ def call_gemini_native(history, status=None):
     
     return "Stopped after 60 tool rounds to prevent an endless loop."
 
+
+def _update_thinking_status(status_obj):
+    """Background thread to update spinner text continuously every 2 seconds."""
+    messages = [
+        "[cyan]Thinking...[/cyan]",
+        "[cyan]Still thinking... (AI is working)[/cyan]",
+        "[bold yellow]Generating code...[/bold yellow]",
+        "[bold magenta]Working hard... (Processing)[/bold magenta]",
+        "[bold red]Almost there... (Please wait)[/bold red]"
+    ]
+    try:
+        idx = 0
+        while True:
+            time.sleep(2)
+            if status_obj:
+                status_obj.update(messages[idx % len(messages)])
+                idx += 1
+    except Exception:
+        # Thread ends silently when the main process finishes
+        pass
+
 def ask_agent(history):
     _seen_calls = set()
     _call_counts = {}
@@ -787,6 +873,8 @@ def ask_agent(history):
         try:
             if RICH:
                 with console.status("[cyan]Thinking...[/cyan]") as status:
+                    # Start background timer to update text if it takes > 3s
+                    threading.Thread(target=_update_thinking_status, args=(status,), daemon=True).start()
                     response = call_api(history, status=status)
             else:
                 print("Thinking...")
