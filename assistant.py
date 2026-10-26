@@ -330,6 +330,7 @@ def _command_is_high_risk(command):
 
 
 _FRIENDLY_ERRORS = True
+_CLEAN_ERRORS_V2 = True
 # ---- Hardened shell detection (shlex-aware, v2) ----
 _HARDENED_SHELL_DETECT_V2 = True
 
@@ -787,16 +788,8 @@ def ask_agent(history):
             try:
                 return call_gemini_native(history)
             except Exception as gemini_error:
-                g_msg = str(gemini_error)
-                if "429" in g_msg or "RESOURCE_EXHAUSTED" in g_msg:
-                    g_msg = "Rate Limit Exceeded (Wait 1-2 mins)"
-                elif len(g_msg) > 200:
-                    g_msg = g_msg[:200] + "... [Error too long]"
-                
                 raise RuntimeError(
-                    "AI Providers Failed (Quota Limit). Please wait 1 minute and type 'retry'.\n"
-                    f"- Chat API: {openrouter_error}\n"
-                    f"- Gemini: {g_msg}"
+                    "API Limit Reached (Free Tier). Please wait 1 minute and type 'retry'."
                 ) from None
 
         history.append(message)
