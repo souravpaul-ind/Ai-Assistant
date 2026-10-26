@@ -389,6 +389,12 @@ def _init_debug_log():
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     _DEBUG_FILE = _DEBUG_DIR / f"ai_debug_{ts}.log"
     
+    # Create the file immediately so the cleanup logic counts it
+    try:
+        _DEBUG_FILE.touch()
+    except Exception:
+        pass
+
     # Cleanup old logs (keep only latest 5)
     try:
         files = sorted(_DEBUG_DIR.glob("ai_debug_*.log"), key=lambda x: x.stat().st_mtime)
@@ -713,8 +719,12 @@ def call_api(messages, status=None):
                 msg = "provider request failed"
 
             raise RuntimeError(f"{provider}: HTTP {exc.code} — {msg}") from None
-        except urllib.error.URLError:
+        except urllib.error.URLError as exc:
+            if "timed out" in str(exc).lower() or isinstance(exc.reason, TimeoutError):
+                raise RuntimeError(f"{provider}: request timed out") from None
             raise RuntimeError(f"{provider}: connection failed") from None
+        except TimeoutError:
+            raise RuntimeError(f"{provider}: request timed out") from None
 
     def gemini_compatible_messages(history):
         converted = []
@@ -734,6 +744,7 @@ def call_api(messages, status=None):
         if _is_on_cooldown(g_model):
             continue
         try:
+            debug_log("API_CALL", f"Gemini Compatible | Model: {g_model}")
             if not GEMINI_KEY_FILE.is_file():
                 raise RuntimeError(f"Key file not found: {GEMINI_KEY_FILE}")
             key = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip()
@@ -830,7 +841,7 @@ def call_gemini_native(history, status=None):
                 model=current_model,
                 contents=contents,
                 config=config,
-                timeout=20
+                timeout=30
             )
         except Exception as exc:
             msg = str(exc).lower()
@@ -845,7 +856,11 @@ def call_gemini_native(history, status=None):
                 _set_cooldown(current_model, 24)
                 
             # 3. Transient Errors (503, 500, Timeout) -> No cooldown, just switch model
-            is_transient = "503" in msg or "500" in msg or "unavailable" in msg or "timeout" in msg or "deadline" in msg
+            is_not_found = "404" in msg or "not_found" in msg or "not found" in msg
+            if is_not_found:
+                _set_cooldown(current_model, 24) # Ban this bad model ID
+                
+            is_transient = "503" in msg or "500" in msg or "unavailable" in msg or "timeout" in msg or "timed out" in msg or "deadline" in msg or is_not_found
             
             if is_quota or is_transient:
                 next_idx = current_model_idx + 1
@@ -963,7 +978,12 @@ def ask_agent(history):
             function = tool_call.get("function", {})
             name = function.get("name", "")
             args_raw = function.get("arguments") or "{}"
-            call_key = (name, args_raw)
+            try:
+                # Sort keys so {'a':1, 'b':2} matches {'b':2, 'a':1}
+                args_sorted = json.dumps(json.loads(args_raw), sort_keys=True)
+                call_key = (name, args_sorted)
+            except Exception:
+                call_key = (name, args_raw)
             
             if call_key in _seen_calls:
                 history.append({"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": f"Skipped: identical '{name}' call was already executed this turn. Do not repeat it."})
