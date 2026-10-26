@@ -9,6 +9,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -67,6 +68,8 @@ succeeded unless its tool confirms success. Do not request root access or use
 sudo/su. Do not expose API keys or secrets. If the user's request is vague
 (e.g. "retry"), first ask what specifically to retry — do NOT guess and loop.
 You are an autonomous coding agent. If the user gives you PRD or instruction files, you must read them, plan the architecture, create all necessary files (HTML, CSS, JS), run the server, and test the website yourself. Do not ask for step-by-step permission. Keep executing tools until the website is fully built and running.
+
+CRITICAL RULE: NEVER use `run_command` to start an HTTP server (like `python3 -m http.server`, `flask run`, `npm start`). It will freeze the terminal. You MUST ALWAYS use the `start_server` tool for local Python HTTP servers.
 
 IMPORTANT server tool distinction:
 - `start_server` runs Python's built-in `http.server` — a STATIC file server
@@ -1189,6 +1192,7 @@ def maybe_auto_resume(history=None):
 
 
 def checkpoint_on_exit():
+    """Best-effort session-end checkpoint with visible confirmation."""
     if not _pm_available():
         return
     try:
@@ -1196,9 +1200,22 @@ def checkpoint_on_exit():
         if mem is None:
             return
         project_memory.checkpoint(str(AI_WORKDIR), mem, store=str(PROJECT_MEMORY_STORE))
-    except Exception:
-        pass
-
+        
+        if RICH:
+            console.print("\n[bold green][+] Project memory saved successfully.[/bold green]")
+        else:
+            print("\n[+] Project memory saved successfully.")
+            
+    except KeyboardInterrupt:
+        if RICH:
+            console.print("\n[bold red][!] Save interrupted by user![/bold red]")
+        else:
+            print("\n[!] Save interrupted by user!")
+    except Exception as exc:
+        if RICH:
+            console.print(f"\n[bold red][!] Failed to save project memory: {exc}[/bold red]")
+        else:
+            print(f"\n[!] Failed to save project memory: {exc}")
 
 def main():
     show_welcome()

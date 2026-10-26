@@ -31,7 +31,8 @@ _SKIP_DIRS = {
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    # Use local system time instead of UTC
+    return datetime.now().astimezone().replace(microsecond=0).isoformat()
 
 
 def _hash_path(abs_path: str) -> str:
