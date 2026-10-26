@@ -352,13 +352,17 @@ def _get_cooldowns():
     except Exception:
         return {}
 
-def _set_cooldown(key, hours=24):
+def _set_cooldown(key, hours=24, reason=""):
     import json as _json
     import time as _time
     cd = _get_cooldowns()
     cd[key] = _time.time() + (hours * 3600)
     _COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
     _COOLDOWN_FILE.write_text(_json.dumps(cd))
+    if reason:
+        debug_log("COOLDOWN", f"Blocked '{key}' for {hours}h. Reason: {reason}")
+    else:
+        debug_log("COOLDOWN", f"Blocked '{key}' for {hours}h.")
 
 def _is_on_cooldown(key):
     import time as _time
@@ -702,8 +706,7 @@ def call_api(messages, status=None):
 
             if exc.code == 429:
                 if provider == "OpenRouter":
-                    _set_cooldown("openrouter", 24)
-                    debug_log("COOLDOWN", "OpenRouter 429 block applied.")
+                    _set_cooldown("openrouter", 24, reason=f"HTTP {exc.code} - {msg}")
                     msg = "free quota exhausted"
                 else:
                     msg = "quota or rate limit exceeded"
@@ -740,6 +743,10 @@ def call_api(messages, status=None):
                 converted.append({"role": role, "content": content})
         return converted
 
+    # Bypass Compatible API to save time and go straight to Native SDK
+    # (Compatible API is currently failing on Google's end)
+    raise RuntimeError("Skipping Compatible Gemini API to save time.")
+
     for g_model in GEMINI_MODELS:
         if _is_on_cooldown(g_model):
             continue
@@ -764,7 +771,7 @@ def call_api(messages, status=None):
         except Exception as exc:
             err_str = str(exc)
             if "429" in err_str or "quota" in err_str.lower():
-                _set_cooldown(g_model, 24)
+                _set_cooldown(g_model, 24, reason=f"Compatible API Error: {err_str[:80]}")
                 continue
             errors.append(err_str)
             break
@@ -841,7 +848,7 @@ def call_gemini_native(history, status=None):
                 model=current_model,
                 contents=contents,
                 config=config,
-                timeout=30
+                timeout=40
             )
         except Exception as exc:
             msg = str(exc).lower()
@@ -853,12 +860,12 @@ def call_gemini_native(history, status=None):
             # 2. Quota Limits (429) -> 24h Cooldown
             is_quota = "429" in msg or "quota" in msg or "resource_exhausted" in msg
             if is_quota:
-                _set_cooldown(current_model, 24)
+                _set_cooldown(current_model, 24, reason=f"Quota Exceeded: {msg[:80]}")
                 
             # 3. Transient Errors (503, 500, Timeout) -> No cooldown, just switch model
             is_not_found = "404" in msg or "not_found" in msg or "not found" in msg
             if is_not_found:
-                _set_cooldown(current_model, 24) # Ban this bad model ID
+                _set_cooldown(current_model, 24, reason=f"Model Not Found (404): {msg[:80]}")
                 
             is_transient = "503" in msg or "500" in msg or "unavailable" in msg or "timeout" in msg or "timed out" in msg or "deadline" in msg or is_not_found
             
