@@ -65,8 +65,7 @@ commands, and suspicious or potentially harmful actions. Never claim an action
 succeeded unless its tool confirms success. Do not request root access or use
 sudo/su. Do not expose API keys or secrets. If the user's request is vague
 (e.g. "retry"), first ask what specifically to retry — do NOT guess and loop.
-Never call the same tool with the same arguments more than once per prompt.
-If you have made 3+ tool calls and are not making progress, stop and summarize.
+You are an autonomous coding agent. If the user gives you PRD or instruction files, you must read them, plan the architecture, create all necessary files (HTML, CSS, JS), run the server, and test the website yourself. Do not ask for step-by-step permission. Keep executing tools until the website is fully built and running.
 
 IMPORTANT server tool distinction:
 - `start_server` runs Python's built-in `http.server` — a STATIC file server
@@ -713,7 +712,7 @@ def call_gemini_native(history):
         temperature=0.3,
     )
 
-    for _ in range(8):
+    for _ in range(60):
         response = client.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=contents,
@@ -759,7 +758,7 @@ _TOOL_CALL_CAP = True
 def ask_agent(history):
     _seen_calls = set()
     _call_counts = {}
-    for _round in range(8):
+    for _round in range(60):
         try:
             if RICH:
                 with console.status("[cyan]Thinking...[/cyan]"):
@@ -810,22 +809,8 @@ def ask_agent(history):
                 })
                 continue
             _seen_calls.add(call_key)
-            # Hard cap: no single tool more than 3 times, no prompt more than 6 calls total
-            _call_counts[name] = _call_counts.get(name, 0) + 1
-            if _call_counts[name] > 3:
-                history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id", ""),
-                    "content": f"Blocked: '{name}' has already been called 3 times this prompt. Stop and summarize what you have done so far.",
-                })
-                continue
-            if sum(_call_counts.values()) > 6:
-                history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id", ""),
-                    "content": "Blocked: too many tool calls this prompt (limit 6). Summarize your progress and let the user decide the next step.",
-                })
-                continue
+            _UNLIMITED_AUTOPILOT = True
+            # Tool limits removed for full website building capability
             try:
                 arguments = json.loads(args_raw)
                 result = DISPATCH[name](arguments) if name in DISPATCH else "Error: unknown tool."
