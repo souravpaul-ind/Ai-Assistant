@@ -563,7 +563,7 @@ DISPATCH = {
     "edit_file": _with_autosave(tool_edit_file, "edit_file"),
     "delete_file": _with_autosave(tool_delete_file, "delete_file"),
     "make_directory": _with_autosave(tool_make_directory, "make_directory"),
-    "run_command": _with_autosave(tool_run_command, "run_command"),
+    "run_command": tool_run_command,
     "start_server": _with_autosave(tool_start_server, "start_server"),
     "stop_process": _with_autosave(tool_stop_process, "stop_process"),
 }
@@ -735,18 +735,18 @@ def call_gemini_native(history, status=None):
             )
         except Exception as exc:
             msg = str(exc)
-            if "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
+            if "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg or "high demand" in msg:
                 if current_model_idx + 1 < len(GEMINI_MODELS):
                     current_model_idx += 1
                     new_model = GEMINI_MODELS[current_model_idx]
                     if status:
-                        status.update(f"[bold yellow]Model limit hit. Switching to {new_model}...[/bold yellow]")
+                        status.update(f"[bold yellow]Model busy/limit hit. Switching to {new_model}...[/bold yellow]")
                     else:
-                        say(f"\n[Gemini Native] Model limit hit. Switching to {new_model}...")
-                    time.sleep(2)
+                        say(f"\n[Gemini Native] Model busy/limit hit. Switching to {new_model}...")
+                    time.sleep(3)
                     continue
                 else:
-                    raise RuntimeError("All Gemini models hit their daily rate limit. Please try again later.")
+                    raise RuntimeError("All Gemini models are busy or hit their daily limit. Please try again later.")
             raise
 
         candidate_content = response.candidates[0].content if response.candidates else None
@@ -812,7 +812,7 @@ def ask_agent(history):
                         return call_gemini_native(history, status=status_gem)
             except Exception as gemini_error:
                 raise RuntimeError(
-                    "API Limit Reached (Free Tier). Please wait 1 minute and type 'retry'."
+                    "All AI models are currently busy or hit their limit. Please wait a minute and type 'retry'."
                 ) from None
 
         history.append(message)
@@ -951,24 +951,9 @@ def _autosave_after_mutation(tool_name):
         if mem is None:
             return False
         _AUTOSAVE_DEDUP = True
-        note = f"Autosave after {tool_name} at {project_memory._utcnow()}"
-        state = mem.get("current_state") or []
-        # Skip if the same tool ran within the last 2 seconds (loop/spam guard).
-        import time as _time
-        recent_same = False
-        for prev in state[-3:]:
-            if isinstance(prev, str) and prev.startswith(f"Autosave after {tool_name} at "):
-                try:
-                    ts = prev.rsplit(" at ", 1)[1]
-                    prev_epoch = __import__("datetime").datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
-                    if abs(_time.time() - prev_epoch) < 2.0:
-                        recent_same = True
-                        break
-                except Exception:
-                    pass
-        if not recent_same:
-            state.append(note)
-        mem["current_state"] = state[-50:]
+        # We don't append a note to current_state anymore to avoid spam.
+        # The checkpoint timestamp is enough to show it was saved.
+        pass
         project_memory.checkpoint(str(AI_WORKDIR), mem, store=str(PROJECT_MEMORY_STORE))
         return True
     except Exception:
