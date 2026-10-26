@@ -564,7 +564,7 @@ DISPATCH = {
 }
 
 
-def call_api(messages):
+def call_api(messages, status=None):
     errors = []
 
     def strip_nulls(value):
@@ -664,7 +664,7 @@ def call_api(messages):
     raise RuntimeError("All AI providers failed:\n" + summary)
 
 
-def call_gemini_native(history):
+def call_gemini_native(history, status=None):
     from google import genai
     from google.genai import types
 
@@ -715,11 +715,31 @@ def call_gemini_native(history):
     )
 
     for _ in range(60):
-        response = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=contents,
-            config=config,
-        )
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            msg = str(exc)
+            if "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
+                delay = 15
+                match = re.search(r'retry in ([\d\.]+)s', msg) or re.search(r'retryDelay.*?(\d+)s', msg)
+                if match:
+                    delay = int(float(match.group(1))) + 2
+                msg = f"Gemini Rate limit hit. Auto-waiting {delay} seconds..."
+                if status:
+                    status.update(f"[bold yellow]{msg}[/bold yellow]")
+                else:
+                    say(f"\n[Gemini Native] {msg}")
+                
+                time.sleep(delay)
+                
+                if status:
+                    status.update("[cyan]Thinking...[/cyan]")
+                continue
+            raise
         candidate_content = response.candidates[0].content if response.candidates else None
         if candidate_content is not None:
             contents.append(candidate_content)
@@ -763,8 +783,8 @@ def ask_agent(history):
     for _round in range(60):
         try:
             if RICH:
-                with console.status("[cyan]Thinking...[/cyan]"):
-                    response = call_api(history)
+                with console.status("[cyan]Thinking...[/cyan]") as status:
+                    response = call_api(history, status=status)
             else:
                 print("Thinking...")
                 response = call_api(history)
@@ -777,7 +797,7 @@ def ask_agent(history):
             if RICH:
                 with console.status("[cyan]Trying native Gemini...[/cyan]"):
                     try:
-                        return call_gemini_native(history)
+                        return call_gemini_native(history, status=status)
                     except Exception as gemini_error:
                         raise RuntimeError(
                             "AI providers failed.\n"
@@ -786,7 +806,7 @@ def ask_agent(history):
                         ) from None
             print("Trying native Gemini...")
             try:
-                return call_gemini_native(history)
+                return call_gemini_native(history, status=status)
             except Exception as gemini_error:
                 raise RuntimeError(
                     "API Limit Reached (Free Tier). Please wait 1 minute and type 'retry'."
