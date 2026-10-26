@@ -28,3 +28,4 @@ http-server.log
 .vscode/
 .idea/
 .DS_Store
+ai_assistant_debug.log

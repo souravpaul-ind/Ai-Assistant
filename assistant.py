@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import concurrent.futures
 import threading
 import urllib.error
 import urllib.request
@@ -372,6 +373,51 @@ def _is_on_cooldown(key):
             _COOLDOWN_FILE.write_text(_json.dumps(cd))
     return False
 
+
+# ---- Debug Logging System (Rotating) ----
+_DEBUG_MODE = False
+_DEBUG_DIR = HOME / ".log"
+DEBUG_MODE_FILE = HOME / ".config" / "ai-assistant" / "debug_mode"
+_DEBUG_FILE = None
+
+def _init_debug_log():
+    global _DEBUG_FILE
+    import datetime
+    _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Create new file with timestamp
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _DEBUG_FILE = _DEBUG_DIR / f"ai_debug_{ts}.log"
+    
+    # Cleanup old logs (keep only latest 5)
+    try:
+        files = sorted(_DEBUG_DIR.glob("ai_debug_*.log"), key=lambda x: x.stat().st_mtime)
+        if len(files) > 5:
+            for old_file in files[:-5]:
+                try:
+                    old_file.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def debug_log(event_type, data):
+    global _DEBUG_MODE, _DEBUG_FILE
+    if not _DEBUG_MODE or _DEBUG_FILE is None:
+        return
+    try:
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        safe_data = str(data)
+        # Security: never log API keys
+        if "Bearer " in safe_data:
+            safe_data = safe_data.replace("Bearer ", "Bearer [REDACTED]")
+        
+        with open(_DEBUG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{event_type}] {safe_data}\n")
+    except Exception:
+        pass
+
 # ---- Hardened shell detection (shlex-aware, v2) ----
 _HARDENED_SHELL_DETECT_V2 = True
 
@@ -581,7 +627,10 @@ def _with_autosave(fn, tool_name):
             hint = f" -> {args.get('path','?')}"
         if hint:
             say(f"[{tool_name}] running{hint}...")
+        
+        debug_log("TOOL_CALL", f"{tool_name} | Args: {args}")
         result = fn(args)
+        debug_log("TOOL_RESULT", f"{tool_name} | Output: {str(result)[:500]}...")
         try:
             if isinstance(result, str) and not result.startswith(("Cancelled", "Error", "Blocked")):
                 if _autosave_after_mutation(tool_name):
@@ -605,7 +654,20 @@ DISPATCH = {
 }
 
 
+
+def _run_with_timeout(func, *args, timeout=20, **kwargs):
+    """Run a function with a strict hard timeout using ThreadPoolExecutor."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(f"API call timed out after {timeout} seconds.")
+
+_SESSION_OPENROUTER_BLOCKED = False
+
 def call_api(messages, status=None):
+    global _SESSION_OPENROUTER_BLOCKED
     errors = []
 
     def strip_nulls(value):
@@ -619,53 +681,40 @@ def call_api(messages, status=None):
         headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
         if extra_headers:
             headers.update(extra_headers)
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(strip_nulls(payload)).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        
+        data_bytes = json.dumps(strip_nulls(payload)).encode("utf-8")
+        request = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+        
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             try:
                 body = exc.read().decode("utf-8", errors="replace").lower()
             except Exception:
                 body = ""
+
             if exc.code == 429:
-                msg = "free quota/rate limit exhausted" if provider == "OpenRouter" else "quota or rate limit exceeded"
-            elif "thought_signature" in body or "thought signature" in body:
-                msg = "tool-call signature missing in conversation history"
+                if provider == "OpenRouter":
+                    _set_cooldown("openrouter", 24)
+                    debug_log("COOLDOWN", "OpenRouter 429 block applied.")
+                    msg = "free quota exhausted"
+                else:
+                    msg = "quota or rate limit exceeded"
+            elif exc.code in (500, 502, 503, 504):
+                msg = "provider server temporarily down"
             elif exc.code in (401, 403):
-                msg = "API key rejected or access not permitted"
+                msg = "fatal error: API key rejected"
+            elif "thought_signature" in body or "thought signature" in body:
+                msg = "tool-call signature missing"
             elif exc.code == 400:
-                msg = "request rejected (check model, tool-call history, or payload)"
+                msg = "bad request (check payload)"
             else:
                 msg = "provider request failed"
+
             raise RuntimeError(f"{provider}: HTTP {exc.code} — {msg}") from None
         except urllib.error.URLError:
-            raise RuntimeError(f"{provider}: connection failed; check internet") from None
-
-    try:
-        if not KEY_FILE.is_file():
-            raise RuntimeError(f"Key file not found: {KEY_FILE}")
-        key = KEY_FILE.read_text(encoding="utf-8").strip()
-        if not key:
-            raise RuntimeError("OpenRouter key file is empty.")
-        payload = {
-            "model": MODEL,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "temperature": 0.3,
-        }
-        return request_json(
-            API_URL, payload, key, "OpenRouter",
-            {"HTTP-Referer": "https://openrouter.ai/", "X-Title": "Termux AI Assistant"},
-        )
-    except Exception as exc:
-        errors.append(str(exc))
+            raise RuntimeError(f"{provider}: connection failed") from None
 
     def gemini_compatible_messages(history):
         converted = []
@@ -775,10 +824,13 @@ def call_gemini_native(history, status=None):
     for _ in range(60):
         try:
             current_model = GEMINI_MODELS[current_model_idx]
-            response = client.models.generate_content(
+            debug_log("API_CALL", f"Gemini Native | Model: {current_model}")
+            response = _run_with_timeout(
+                client.models.generate_content,
                 model=current_model,
                 contents=contents,
                 config=config,
+                timeout=20
             )
         except Exception as exc:
             msg = str(exc).lower()
@@ -823,11 +875,8 @@ def call_gemini_native(history, status=None):
             answer = response.text
             if answer:
                 return answer
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part.from_text(text="Continue or summarize what you have done.")],
-            ))
-            continue
+            # If no text and no tool calls, DO NOT loop endlessly.
+            raise RuntimeError("Gemini returned an empty response or hit a safety filter.")
             
         function_responses = []
         for call in calls:
@@ -847,7 +896,7 @@ def call_gemini_native(history, status=None):
 
 
 def _update_thinking_status(status_obj):
-    """Background thread to update spinner text continuously every 2 seconds."""
+    """Background thread to update spinner text continuously every 5 seconds."""
     messages = [
         "[cyan]Thinking...[/cyan]",
         "[cyan]Still thinking... (AI is working)[/cyan]",
@@ -858,7 +907,7 @@ def _update_thinking_status(status_obj):
     try:
         idx = 0
         while True:
-            time.sleep(2)
+            time.sleep(5)
             if status_obj:
                 status_obj.update(messages[idx % len(messages)])
                 idx += 1
@@ -873,67 +922,75 @@ def ask_agent(history):
         try:
             if RICH:
                 with console.status("[cyan]Thinking...[/cyan]") as status:
-                    # Start background timer to update text if it takes > 3s
                     threading.Thread(target=_update_thinking_status, args=(status,), daemon=True).start()
                     response = call_api(history, status=status)
             else:
                 print("Thinking...")
                 response = call_api(history)
+            
             choices = response.get("choices") or []
             if not choices:
                 err_detail = response.get("error") or response.get("message") or "empty choices"
                 raise RuntimeError(f"OpenRouter returned no choices: {err_detail}")
             message = choices[0].get("message") or {}
+            
         except Exception as openrouter_error:
             if RICH:
                 with console.status("[cyan]Trying native Gemini...[/cyan]") as status_gem:
+                    threading.Thread(target=_update_thinking_status, args=(status_gem,), daemon=True).start()
                     try:
                         return call_gemini_native(history, status=status_gem)
                     except Exception as gemini_error:
                         raise RuntimeError(
-                            "AI providers failed.\n"
-                            f"Chat API: {openrouter_error}\n"
-                            f"Native Gemini: {gemini_error}"
+                            f"All AI providers failed.\nChat API: {openrouter_error}\nNative Gemini: {gemini_error}"
                         ) from None
-            print("Trying native Gemini...")
-            try:
-                        return call_gemini_native(history, status=status_gem)
-            except Exception as gemini_error:
-                raise RuntimeError(
-                    "All AI models are currently busy or hit their limit. Please wait a minute and type 'retry'."
-                ) from None
+            else:
+                try:
+                    return call_gemini_native(history)
+                except Exception as gemini_error:
+                    raise RuntimeError(
+                        f"All AI providers failed.\nChat API: {openrouter_error}\nNative Gemini: {gemini_error}"
+                    ) from None
 
         history.append(message)
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return message.get("content") or "(No text response)"
+            answer = message.get("content") or "(No text response)"
+            debug_log("AI_REPLY", answer[:1000])
+            return answer
+            
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
             name = function.get("name", "")
             args_raw = function.get("arguments") or "{}"
             call_key = (name, args_raw)
+            
             if call_key in _seen_calls:
-                history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id", ""),
-                    "content": f"Skipped: identical '{name}' call was already executed this turn. Do not repeat it.",
-                })
+                history.append({"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": f"Skipped: identical '{name}' call was already executed this turn. Do not repeat it."})
                 continue
+                
             _seen_calls.add(call_key)
-            _UNLIMITED_AUTOPILOT = True
-            # Tool limits removed for full website building capability
+            _call_counts[name] = _call_counts.get(name, 0) + 1
+            if _call_counts[name] > 15:
+                history.append({"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": f"Blocked: '{name}' has been called 15 times this prompt. Stop and summarize."})
+                continue
+            if sum(_call_counts.values()) > 30:
+                history.append({"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": "Blocked: too many tool calls this prompt (limit 30). Summarize your progress."})
+                continue
+                
             try:
                 arguments = json.loads(args_raw)
                 result = DISPATCH[name](arguments) if name in DISPATCH else "Error: unknown tool."
             except Exception as exc:
                 result = f"Tool error: {type(exc).__name__}: {exc}"
+                
             history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.get("id", ""),
                 "content": str(result)[:15000],
             })
-    return "Stopped after 8 tool rounds to prevent an endless loop."
-
+            
+    return "Stopped after 60 tool rounds to prevent an endless loop."
 
 def command_help():
     commands = {
@@ -1159,6 +1216,7 @@ def _project_save(history=None):
         short_path = "~/" + str(path.relative_to(Path.home())) if str(path).startswith(str(Path.home())) else str(path)
     except (ValueError, AttributeError):
         short_path = str(path)
+    debug_log("MEMORY_SAVE", f"Saved to {short_path}")
     say(f"Project memory saved: {short_path}")
     _refresh_memory_flag()
     if history is not None and _refresh_system_prompt(history):
@@ -1290,7 +1348,15 @@ def checkpoint_on_exit():
             print(f"\n[!] Failed to save project memory: {exc}")
 
 def main():
+    global _DEBUG_MODE
     show_welcome()
+    
+    # Check if debug mode was left ON from previous session
+    if DEBUG_MODE_FILE.is_file() and DEBUG_MODE_FILE.read_text(encoding="utf-8").strip() == "on":
+        _init_debug_log()
+        _DEBUG_MODE = True
+        say(f"[Auto] Debug mode is ON. Logging to {_DEBUG_FILE.name}")
+        
     history = [{"role": "system", "content": SYSTEM}]
     maybe_auto_resume(history)
     _refresh_memory_flag()
@@ -1325,6 +1391,22 @@ def main():
                 else:
                     os.system("clear")
                 print("Chat cleared.")
+                continue
+            if normalized.startswith("!!debug"):
+                arg = normalized[len("!!debug"):].strip()
+                if arg == "on":
+                    _init_debug_log()
+                    _DEBUG_MODE = True
+                    DEBUG_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    DEBUG_MODE_FILE.write_text("on", encoding="utf-8")
+                    say(f"Debug mode ON. Logging to {_DEBUG_FILE}")
+                elif arg == "off":
+                    _DEBUG_MODE = False
+                    DEBUG_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    DEBUG_MODE_FILE.write_text("off", encoding="utf-8")
+                    say("Debug mode OFF.")
+                else:
+                    say("Use !!debug on or !!debug off")
                 continue
             if normalized.startswith("/project"):
                 arg = normalized[len("/project"):].strip()
@@ -1369,6 +1451,7 @@ def main():
                     print("No speech was recognized.")
                     continue
                 print(f"Recognized: {user_text}")
+            debug_log("USER_INPUT", user_text)
             history.append({"role": "user", "content": user_text})
             try:
                 answer = ask_agent(history)
